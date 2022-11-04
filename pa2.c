@@ -89,6 +89,59 @@ bool fcfs_acquire(int resource_id)
 	return false;
 }
 
+bool pcp_acquire(int resource_id)
+{
+	struct resource *r = resources + resource_id;
+
+	if (!r->owner) {
+		/* This resource is not owned by any one. Take it! */
+		r->owner = current;
+		r->owner->prio = MAX_PRIO;
+		return true;
+	}
+
+	/* OK, this resource is taken by @r->owner. */
+
+	/* Update the current process state */
+	current->status = PROCESS_WAIT;
+
+	/* And append current to waitqueue */
+	list_add_tail(&current->list, &r->waitqueue);
+
+	/**
+	 * And return false to indicate the resource is not available.
+	 * The scheduler framework will soon call schedule() function to
+	 * schedule out current and to pick the next process to run.
+	 */
+	return false;
+}
+
+bool pip_acquire(int resource_id)
+{
+	struct resource *r = resources + resource_id;
+
+	if (!r->owner) {
+		/* This resource is not owned by any one. Take it! */
+		r->owner = current;
+		return true;
+	}
+
+	/* OK, this resource is taken by @r->owner. */
+	r->owner->prio = current->prio;
+	/* Update the current process state */
+	current->status = PROCESS_WAIT;
+
+	/* And append current to waitqueue */
+	list_add_tail(&current->list, &r->waitqueue);
+
+	/**
+	 * And return false to indicate the resource is not available.
+	 * The scheduler framework will soon call schedule() function to
+	 * schedule out current and to pick the next process to run.
+	 */
+	return false;
+}
+
 /***********************************************************************
  * Default FCFS resource release function
  *
@@ -137,7 +190,131 @@ void fcfs_release(int resource_id)
 	}
 }
 
+void prio_release(int resource_id)
+{
+	struct resource *r = resources + resource_id;
 
+	r->owner = NULL;
+	if (!list_empty(&r->waitqueue)) {
+		struct process *waiter;
+		struct process *tmp;
+		unsigned int cmpprio = 0;
+		
+		list_for_each_entry(tmp, &r->waitqueue, list){
+			if(cmpprio < tmp->prio){
+				waiter = tmp;
+				cmpprio = tmp->prio;
+			}
+		}
+		
+		/**
+		 * Ensure the waiter is in the wait status
+		 */
+		assert(waiter->status == PROCESS_WAIT);
+
+		/**
+		 * Take out the waiter from the waiting queue. Note we use
+		 * list_del_init() over list_del() to maintain the list head tidy
+		 * (otherwise, the framework will complain on the list head
+		 * when the process exits).
+		 */
+		list_del_init(&waiter->list);
+
+		/* Update the process status */
+		waiter->status = PROCESS_READY;
+
+		/**
+		 * Put the waiter process into ready queue. The framework will
+		 * do the rest.
+		 */
+		list_add_tail(&waiter->list, &readyqueue);
+	}
+	
+}
+
+void pcp_release(int resource_id)
+{
+	struct resource *r = resources + resource_id;
+	r->owner->prio = r->owner->prio_orig;
+	r->owner = NULL;
+	if (!list_empty(&r->waitqueue)) {
+		struct process *waiter;
+		struct process *tmp;
+		unsigned int cmpprio = 0;
+		
+		list_for_each_entry(tmp, &r->waitqueue, list){
+			if(cmpprio < tmp->prio){
+				waiter = tmp;
+				cmpprio = tmp->prio;
+			}
+		}
+		
+		/**
+		 * Ensure the waiter is in the wait status
+		 */
+		assert(waiter->status == PROCESS_WAIT);
+
+		/**
+		 * Take out the waiter from the waiting queue. Note we use
+		 * list_del_init() over list_del() to maintain the list head tidy
+		 * (otherwise, the framework will complain on the list head
+		 * when the process exits).
+		 */
+		list_del_init(&waiter->list);
+
+		/* Update the process status */
+		waiter->status = PROCESS_READY;
+
+		/**
+		 * Put the waiter process into ready queue. The framework will
+		 * do the rest.
+		 */
+		list_add_tail(&waiter->list, &readyqueue);
+	}
+	
+}
+
+void pip_release(int resource_id)
+{
+	struct resource *r = resources + resource_id;
+	r->owner->prio = r->owner->prio_orig;
+	r->owner = NULL;
+	if (!list_empty(&r->waitqueue)) {
+		struct process *waiter;
+		struct process *tmp;
+		unsigned int cmpprio = 0;
+		
+		list_for_each_entry(tmp, &r->waitqueue, list){
+			if(cmpprio < tmp->prio){
+				waiter = tmp;
+				cmpprio = tmp->prio;
+			}
+		}
+		
+		/**
+		 * Ensure the waiter is in the wait status
+		 */
+		assert(waiter->status == PROCESS_WAIT);
+
+		/**
+		 * Take out the waiter from the waiting queue. Note we use
+		 * list_del_init() over list_del() to maintain the list head tidy
+		 * (otherwise, the framework will complain on the list head
+		 * when the process exits).
+		 */
+		list_del_init(&waiter->list);
+
+		/* Update the process status */
+		waiter->status = PROCESS_READY;
+
+		/**
+		 * Put the waiter process into ready queue. The framework will
+		 * do the rest.
+		 */
+		list_add_tail(&waiter->list, &readyqueue);
+	}
+	
+}
 
 #include "sched.h"
 
@@ -198,6 +375,7 @@ pick_next:
 
 	/* Return the process to run next */
 	return next;
+
 }
 
 struct scheduler fifo_scheduler = {
@@ -215,29 +393,81 @@ struct scheduler fifo_scheduler = {
  ***********************************************************************/
 static struct process *sjf_schedule(void)
 {
-	/**
-	 * Implement your own SJF scheduler here.
-	 */
-	return NULL;
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmplife;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age < current->lifespan) {
+		return current;
+	}
+
+pick_next:
+	cmplife = 10000;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry(tmp, &readyqueue, list){
+			if(tmp->lifespan < cmplife){
+				cmplife = tmp->lifespan;
+				next = tmp;
+			}
+		}
+
+		list_del_init(&next->list);
+	}
+	return next;
 }
 
 struct scheduler sjf_scheduler = {
 	.name = "Shortest-Job First",
-	.acquire = fcfs_acquire, /* Use the default FCFS acquire() */
-	.release = fcfs_release, /* Use the default FCFS release() */
-	.schedule = NULL,		 /* TODO: Assign sjf_schedule()
+	.acquire = fcfs_acquire, 	/* Use the default FCFS acquire() */
+	.release = fcfs_release, 	/* Use the default FCFS release() */
+	.schedule = sjf_schedule,	/* TODO: Assign sjf_schedule()
 								to this function pointer to activate
 								SJF in the simulation system */
 };
 
-
 /***********************************************************************
  * SRTF scheduler
  ***********************************************************************/
+ 
+static struct process *srtf_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmplife;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue); 
+pick_next:
+	cmplife = 10000;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry(tmp, &readyqueue, list){
+			if((tmp->lifespan - tmp->age) < cmplife){
+				cmplife = (tmp->lifespan - tmp->age);
+				next = tmp;
+			}
+		}
+		list_del_init(&next->list);
+	}
+	return next;
+}
+
 struct scheduler srtf_scheduler = {
 	.name = "Shortest Remaining Time First",
 	.acquire = fcfs_acquire, /* Use the default FCFS acquire() */
 	.release = fcfs_release, /* Use the default FCFS release() */
+	.schedule = srtf_schedule,
 	/* You need to check the newly created processes to implement SRTF.
 	 * You may use @forked() callback to mark newly created processes
 	 */
@@ -249,10 +479,34 @@ struct scheduler srtf_scheduler = {
 /***********************************************************************
  * Round-robin scheduler
  ***********************************************************************/
+ 
+static struct process *rr_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue);
+pick_next:
+	if (!list_empty(&readyqueue)) {
+		next = list_first_entry(&readyqueue, struct process, list);
+		list_del_init(&next->list);
+	}
+	return next;
+}
+ 
 struct scheduler rr_scheduler = {
 	.name = "Round-Robin",
 	.acquire = fcfs_acquire, /* Use the default FCFS acquire() */
 	.release = fcfs_release, /* Use the default FCFS release() */
+	.schedule = rr_schedule,
 	/* Obviously, you should implement rr_schedule() and attach it here */
 };
 
@@ -260,8 +514,41 @@ struct scheduler rr_scheduler = {
 /***********************************************************************
  * Priority scheduler
  ***********************************************************************/
+ 
+static struct process *prio_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmpprio;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue);
+pick_next:
+	cmpprio = 0;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry_reverse(tmp, &readyqueue, list){
+			if(tmp->prio >= cmpprio){
+				cmpprio = tmp->prio;
+				next = tmp;
+			}
+		}
+		list_del_init(&next->list);
+	}
+	return next;
+}
+
 struct scheduler prio_scheduler = {
 	.name = "Priority",
+	.acquire = fcfs_acquire,
+	.release = prio_release,
+	.schedule = prio_schedule,
 	/**
 	 * Implement your own acqure/release function to make the priority
 	 * scheduler correct.
@@ -273,8 +560,44 @@ struct scheduler prio_scheduler = {
 /***********************************************************************
  * Priority scheduler with aging
  ***********************************************************************/
+ 
+static struct process *pa_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmpprio;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue);
+pick_next:
+	cmpprio = 0;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry_reverse(tmp, &readyqueue, list){
+			if(tmp->prio >= cmpprio){
+				cmpprio = tmp->prio;
+				next = tmp;
+			}
+			tmp->prio++;
+		}
+		next->prio = next->prio_orig;
+		list_del_init(&next->list);
+	}
+	return next;
+}
+
+ 
 struct scheduler pa_scheduler = {
 	.name = "Priority + aging",
+	.acquire = fcfs_acquire,
+	.release = prio_release,
+	.schedule = pa_schedule,
 	/**
 	 * Ditto
 	 */
@@ -284,8 +607,41 @@ struct scheduler pa_scheduler = {
 /***********************************************************************
  * Priority scheduler with priority ceiling protocol
  ***********************************************************************/
+
+static struct process *pcp_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmpprio;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue);
+pick_next:
+	cmpprio = 0;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry_reverse(tmp, &readyqueue, list){
+			if(tmp->prio >= cmpprio){
+				cmpprio = tmp->prio;
+				next = tmp;
+			}
+		}
+		list_del_init(&next->list);
+	}
+	return next;
+}
+
 struct scheduler pcp_scheduler = {
 	.name = "Priority + PCP Protocol",
+	.acquire = pcp_acquire,
+	.release = pcp_release,
+	.schedule = pcp_schedule,
 	/**
 	 * Ditto
 	 */
@@ -295,8 +651,41 @@ struct scheduler pcp_scheduler = {
 /***********************************************************************
  * Priority scheduler with priority inheritance protocol
  ***********************************************************************/
+
+static struct process *pip_schedule(void)
+{
+
+	struct process *next = NULL;
+	struct process *tmp = NULL;
+	unsigned int cmpprio;
+
+	if (!current || current->status == PROCESS_WAIT) {
+		goto pick_next;
+	}
+
+	if (current->age >= current->lifespan) {
+		goto pick_next;
+	}
+	list_add_tail(&current->list, &readyqueue);
+pick_next:
+	cmpprio = 0;
+	if (!list_empty(&readyqueue)) {
+		list_for_each_entry_reverse(tmp, &readyqueue, list){
+			if(tmp->prio >= cmpprio){
+				cmpprio = tmp->prio;
+				next = tmp;
+			}
+		}
+		list_del_init(&next->list);
+	}
+	return next;
+}
+
 struct scheduler pip_scheduler = {
 	.name = "Priority + PIP Protocol",
+	.acquire = pip_acquire,
+	.release = pip_release,
+	.schedule = pip_schedule,
 	/**
 	 * Ditto
 	 */
